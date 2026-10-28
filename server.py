@@ -57,6 +57,7 @@ _sem = asyncio.Semaphore(MAX_CONCURRENCY)
 _stats = {"requests": 0, "ok": 0, "failed": 0, "inflight": 0, "latency_ms": []}
 _accounts: list[PhotifyClient] = []
 _account_locks: list[threading.Lock] = []
+_personas: dict[str, int] = {}  # persona 名 → 账号下标（一个账号 = 一张固定人脸）
 _rr = 0
 
 
@@ -70,9 +71,10 @@ def load_accounts() -> None:
         {"accounts": [{"refresh_token": "...", "firebase_uid": "...",
                        "identity_image_id": "可选，复用已上传的身份图"}]}
     """
-    global _accounts, _account_locks
+    global _accounts, _account_locks, _personas
     _accounts = []
     _account_locks = []
+    _personas = {}
     if not ACCOUNTS_FILE.exists():
         return
     data = json.loads(ACCOUNTS_FILE.read_text(encoding="utf-8"))
@@ -84,17 +86,41 @@ def load_accounts() -> None:
         acc.identity_image_id = item.get("identity_image_id", "")
         _accounts.append(PhotifyClient(acc, timeout=UPSTREAM_TIMEOUT))
         _account_locks.append(threading.Lock())
-    print(f"[accounts] loaded {len(_accounts)}")
+        persona = (item.get("persona") or "").strip().lower()
+        if persona:
+            _personas[persona] = len(_accounts) - 1
+    print(f"[accounts] loaded {len(_accounts)}  personas={sorted(_personas)}")
 
 
-def pick_client() -> tuple[PhotifyClient, threading.Lock]:
-    """轮询取账号；同一账号的「上传身份图 + 生成」必须串行，否则身份图会互相覆盖。"""
+def pick_client(persona: str | None = None) -> tuple[PhotifyClient, threading.Lock]:
+    """persona 指定时锁定到对应账号；否则轮询。
+    同一账号的「上传身份图 + 生成」必须串行，否则身份图会互相覆盖。"""
     global _rr
     if not _accounts:
         raise HTTPException(503, "no photify account configured (see accounts.json.example)")
+    if persona:
+        idx = _personas.get(persona)
+        if idx is None:
+            raise HTTPException(404, f"unknown persona '{persona}'")
+        return _accounts[idx], _account_locks[idx]
     idx = _rr % len(_accounts)
     _rr += 1
     return _accounts[idx], _account_locks[idx]
+
+
+def resolve_model(model: str) -> tuple[str, str | None]:
+    """把对外模型名解析成 (上游模型 slug, persona)。
+
+    `photify/<persona>` 是「按账号固定人设」的写法：同一张身份图 + 指定账号，
+    供 new-api 里一个渠道对应一个人设。
+    """
+    if model in MODELS:
+        return model, None
+    if model.startswith("photify/"):
+        persona = model.split("/", 1)[1].strip().lower()
+        if persona in _personas:
+            return DEFAULT_MODEL, persona
+    raise HTTPException(400, f"unknown model '{model}', available: {sorted(MODELS) + [f'photify/{p}' for p in sorted(_personas)]}")
 
 
 @app.on_event("startup")
@@ -173,17 +199,17 @@ async def run_generation(
     identity_hint: dict[str, Any] | None = None,
 ) -> bytes:
     """统一入口：mock 直接合成，real 走 Photify 真实链路。"""
-    if model not in MODELS:
-        raise HTTPException(400, f"unknown model '{model}', available: {sorted(MODELS)}")
     if not prompt.strip():
         raise HTTPException(400, "prompt is required")
+
+    spec_key, persona = resolve_model(model)
 
     if MODE != "real":
         await asyncio.sleep(1.2)  # 模拟上游同步生成耗时（实测 2s 量级）
         return mock_image(prompt, size)
 
-    client, lock = pick_client()
-    spec = MODELS[model]
+    client, lock = pick_client(persona)
+    spec = MODELS[spec_key]
     traits = identity_hint or {}
 
     def _call() -> bytes:
@@ -247,18 +273,27 @@ def metrics() -> dict[str, Any]:
 
 @app.get("/v1/models")
 def list_models() -> dict[str, Any]:
-    return {
-        "object": "list",
-        "data": [
+    data = [
+        {
+            "id": name,
+            "object": "model",
+            "owned_by": "photify",
+            "photify_tokens": spec["price"],
+        }
+        for name, spec in MODELS.items()
+    ]
+    # 每个命名 persona（= 一个账号 + 一张固定身份图）单独暴露一个模型名
+    for persona in sorted(_personas):
+        data.append(
             {
-                "id": name,
+                "id": f"photify/{persona}",
                 "object": "model",
                 "owned_by": "photify",
-                "photify_tokens": spec["price"],
+                "photify_tokens": 1,
+                "persona": True,
             }
-            for name, spec in MODELS.items()
-        ],
-    }
+        )
+    return {"object": "list", "data": data}
 
 
 @app.post("/v1/images/generations")

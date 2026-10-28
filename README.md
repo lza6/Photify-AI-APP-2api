@@ -75,6 +75,24 @@ python bench.py --base http://127.0.0.1:8931 --concurrency 8 --total 24
 - `asyncio.Semaphore` 并发闸门（`PHOTIFY_MAX_CONCURRENCY`，默认 4）
 - 上游返回流式图片（`@Streaming ResponseBody`）直接落盘，按魔数判定 jpg/png
 
+### 多人设：`photify/<persona>`
+
+Photify 是「一张身份图 = 一张脸」，一个人设就得一个账号。在 `accounts.json` 里给账号命名：
+
+```json
+{"accounts": [
+  {"refresh_token": "...", "firebase_uid": "...", "persona": "alice"},
+  {"refresh_token": "...", "firebase_uid": "...", "persona": "bob"}
+]}
+```
+
+网关会自动多暴露两个模型名 `photify/alice` / `photify/bob`，分别固定路由到对应账号
+（未命名的账号继续参与轮询）。这样在 new-api 里可以「一个渠道一个人设」，用户在模型列表里
+直接选人设，而不会每张图都是不同的人。
+
+实测：`GET /v1/models` 返回 6 个内置模型 + 全部 persona；`photify/alice` 200，
+未知 persona 400（错误信息里会列出可用项）。
+
 ## 身份图语义（实测，别踩的坑）
 
 - `identityImageId` 参与生成，但 `gender / skinColor / hairColor / bodyType` 是**显式覆盖参数**：

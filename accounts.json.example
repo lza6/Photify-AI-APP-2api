@@ -1,10 +1,11 @@
 {
-  "_说明": "把 refresh_token 填进来即可。匿名账号可用 python -c \"from photify_client import PhotifyClient as C; c=C.create_anonymous(); print(c.account.refresh_token, c.account.firebase_uid)\" 生成。identity_image_id 可留空，网关会在首次请求时上传身份图并缓存。",
+  "_说明": "把 refresh_token 填进来即可。匿名账号可用 python -c \"from photify_client import PhotifyClient as C; c=C.create_anonymous(); print(c.account.refresh_token, c.account.firebase_uid)\" 生成。identity_image_id 可留空，网关会在首次请求时上传身份图并缓存。persona 可选：填了之后网关会额外暴露一个模型名 photify/<persona>，固定路由到该账号（= 固定一张人脸）。",
   "accounts": [
     {
       "refresh_token": "",
       "firebase_uid": "",
-      "identity_image_id": ""
+      "identity_image_id": "",
+      "persona": ""
     }
   ]
 }
