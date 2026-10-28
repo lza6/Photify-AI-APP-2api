@@ -1,0 +1,6 @@
+# 不提交真实凭证与产物
+accounts.json
+output/
+*.log
+__pycache__/
+assets/default_identity.jpg

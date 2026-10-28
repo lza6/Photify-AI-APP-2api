@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Photify AI · 2API Demo</title>
+<style>
+  :root { --bg:#0b0d12; --card:#151922; --line:#252b38; --fg:#e8ecf4; --mut:#8b94a7; --acc:#7c5cff; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.6 system-ui,"Segoe UI",sans-serif; }
+  header { padding:20px 24px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; }
+  header h1 { font-size:16px; margin:0; font-weight:600; }
+  .badge { font-size:12px; padding:2px 8px; border-radius:999px; background:#1d2433; color:var(--mut); border:1px solid var(--line); }
+  main { max-width:1080px; margin:0 auto; padding:24px; display:grid; grid-template-columns:380px 1fr; gap:20px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px; }
+  label { display:block; font-size:12px; color:var(--mut); margin:12px 0 6px; }
+  input[type=text], select, textarea { width:100%; background:#0f131b; border:1px solid var(--line); color:var(--fg);
+    border-radius:8px; padding:9px 10px; font:inherit; }
+  textarea { min-height:88px; resize:vertical; }
+  button { margin-top:16px; width:100%; padding:11px; border:0; border-radius:8px; background:var(--acc);
+    color:#fff; font-weight:600; cursor:pointer; }
+  button:disabled { opacity:.55; cursor:not-allowed; }
+  #out { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:12px; }
+  #out img { width:100%; border-radius:10px; border:1px solid var(--line); background:#000; }
+  #log { margin-top:12px; font:12px/1.6 ui-monospace,monospace; color:var(--mut); white-space:pre-wrap; max-height:180px; overflow:auto; }
+  .drop { border:1px dashed var(--line); border-radius:10px; padding:18px; text-align:center; color:var(--mut); cursor:pointer; }
+  .drop img { max-width:100%; max-height:180px; border-radius:8px; }
+  .row { display:flex; gap:8px; }
+  .row > * { flex:1; }
+  .hint { font-size:12px; color:var(--mut); margin-top:10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Photify AI · 2API Demo</h1>
+  <span class="badge" id="mode">…</span>
+  <span class="badge" id="meta">…</span>
+</header>
+<main>
+  <section class="card">
+    <label>身份图（1 张人像，Photify 靠它提取性别/肤色/发色）</label>
+    <div class="drop" id="drop">点击选择图片<input type="file" id="file" accept="image/*" hidden /></div>
+
+    <label>风格描述 prompt</label>
+    <textarea id="prompt">cinematic portrait, neon cyberpunk street at night, chrome jacket, rain reflections, dramatic lighting</textarea>
+
+    <label>模型</label>
+    <select id="model"></select>
+
+    <div class="row">
+      <div><label>性别</label>
+        <select id="gender"><option>woman</option><option>man</option><option>nonbinary</option></select></div>
+      <div><label>肤色</label>
+        <select id="skin"><option>white</option><option>pale</option><option>tanned</option><option>black</option></select></div>
+    </div>
+    <div class="row">
+      <div><label>发色</label>
+        <select id="hair"><option>brown</option><option>black</option><option>blonde</option><option>red</option><option>silver</option></select></div>
+      <div><label>体型</label>
+        <select id="body"><option>lean</option><option>skinny</option><option>muscular</option><option>curvy</option><option>heavyset</option></select></div>
+    </div>
+
+    <button id="go">生成</button>
+    <div class="hint">mock 模式下不上传任何数据到 Photify，本地合成图；real 模式需要 accounts.json 里的真实账号额度。</div>
+    <div id="log"></div>
+  </section>
+
+  <section class="card">
+    <label style="margin-top:0">结果</label>
+    <div id="out"></div>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+let file = null;
+
+$('drop').onclick = () => $('file').click();
+$('file').onchange = (e) => {
+  file = e.target.files[0];
+  if (!file) return;
+  const url = URL.createObjectURL(file);
+  $('drop').innerHTML = `<img src="${url}" />`;
+  $('drop').appendChild($('file'));
+  $('file').hidden = true;
+};
+
+async function boot() {
+  const h = await (await fetch('/health')).json();
+  $('mode').textContent = '模式 ' + h.mode;
+  $('meta').textContent = '账号 ' + h.accounts;
+  const m = await (await fetch('/v1/models')).json();
+  $('model').innerHTML = m.data.map((x) =>
+    `<option value="${x.id}" ${x.id === 'photify/starter' ? 'selected' : ''}>${x.id} · ${x.photify_tokens} tokens</option>`
+  ).join('');
+}
+boot();
+
+$('go').onclick = async () => {
+  if (!file) { $('log').textContent = '请先选择一张身份图'; return; }
+  $('go').disabled = true;
+  $('log').textContent = '请求中…';
+  const fd = new FormData();
+  fd.append('image', file);
+  fd.append('prompt', $('prompt').value);
+  fd.append('model', $('model').value);
+  fd.append('response_format', 'url');
+  const t0 = performance.now();
+  try {
+    const r = await fetch('/v1/images/edits', { method: 'POST', body: fd });
+    const j = await r.json();
+    const ms = Math.round(performance.now() - t0);
+    if (!r.ok) {
+      $('log').textContent = `HTTP ${r.status} (${ms}ms)\n` + JSON.stringify(j, null, 2);
+      return;
+    }
+    $('log').textContent = `OK ${ms}ms`;
+    const img = document.createElement('img');
+    img.src = j.data[0].url;
+    $('out').prepend(img);
+  } catch (err) {
+    $('log').textContent = '网络错误: ' + err;
+  } finally {
+    $('go').disabled = false;
+  }
+};
+</script>
+</body>
+</html>
