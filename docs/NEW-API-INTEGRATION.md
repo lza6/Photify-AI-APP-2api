@@ -59,7 +59,7 @@ curl -X POST http://127.0.0.1:8931/v1/images/generations \
 | 名称 | `photify-2api` |
 | Base URL | `http://<网关内网地址>:8931`（**不带 `/v1`**，new-api 会自己拼 `/v1/images/generations`） |
 | 密钥 | 任意非空字符串（网关不校验，占位如 `sk-photify-local`） |
-| 模型 | `photify/starter`、`photify/supreme`、`photify/supreme-ultra`、`photify/nano-banana` … |
+| 模型 | `photify/starter`、`photify/<persona>`（如 `photify/alice`）；付费模型见 §3 |
 | 模型重定向 | 按需把 `gpt-image-1` → `photify/starter` 之类的别名做映射 |
 
 > ⚠️ new-api 的「测试」按钮打的是 `POST /v1/chat/completions`。网关已实现该端点（把最后一条
@@ -73,6 +73,7 @@ curl -X POST http://127.0.0.1:8931/v1/images/generations \
 | 模型 | 上游实际成本 | 建议 new-api 定价 |
 | --- | --- | --- |
 | `photify/starter` | 本轮实测**不扣 token**（连续 4 次成功，`photoTokens` 恒为 0） | 按次固定价（如 1500 quota/次 ≈ ¥0.003），或 `ModelPrice` 极小值 |
+| `photify/<persona>` | 同上（persona 只是把请求钉死到某个账号） | 同 `photify/starter` |
 | `photify/supreme` / `supreme-ultra` | 需 `premiumTokens`，实测 400 额度不足 | 未购入额度前**不要对外暴露**（会 400） |
 | `photify/nano-banana` / `-pro` | 5 / 10 premiumTokens | 同上 |
 
@@ -101,18 +102,31 @@ curl -X POST http://127.0.0.1:8931/v1/images/edits \
 
 若不支持 multipart 透传：让前端先直连网关的 `/v1/images/edits`，再把结果 URL 回传到业务侧。
 
-### 方案 B：固定人像池（只改渠道配置即可）
+### 方案 B：固定人像池 + persona（只改渠道配置即可）
 
 1. 每个账号先在网关里绑一张身份图：`accounts.json` 的 `identity_image_id`，或提供
    `PHOTIFY_IDENTITY_IMAGE` 让网关首次自动上传；
-2. 用户请求只给 `prompt`，new-api 走 `/v1/images/generations`：
+2. 给账号起 persona 名（一个账号 = 一张脸 = 一个人设）：
 
 ```json
-{"model":"photify/starter","prompt":"…","response_format":"url","size":"1024x1024"}
+{"accounts": [
+  {"refresh_token": "...", "firebase_uid": "...", "persona": "alice"},
+  {"refresh_token": "...", "firebase_uid": "...", "persona": "bob"}
+]}
 ```
 
-1 个账号 = 1 张固定人脸。**要把「N 个不同人设」卖给用户，就配 N 个账号**，网关按轮询分摊
-（同账号内部已加锁串行，避免身份图互相覆盖）。
+3. 网关自动多暴露 `photify/alice` / `photify/bob`，请求只给 `prompt`：
+
+```json
+{"model":"photify/alice","prompt":"…","response_format":"url","size":"1024x1024"}
+```
+
+`photify/<persona>` **固定路由到该账号**（不是轮询），所以同一 persona 的请求永远出同一张脸；
+未命名的账号仍然参与 `photify/starter` 的轮询分摊。
+
+**new-api 侧怎么用**：一个渠道 = 一个人设。给每个 persona 建一个渠道（同样的 Base URL，
+模型分别填 `photify/alice`、`photify/bob`），用户就在模型列表里直接选人设。
+实测：`GET /v1/models` 返回 6 个内置模型 + 全部 persona；未知 persona 返回 400 并列出可用项。
 
 ---
 
@@ -122,7 +136,7 @@ curl -X POST http://127.0.0.1:8931/v1/images/edits \
 | --- | --- | --- |
 | 单次出图延迟 | 常态 5–13s，长尾出现过 144s | 渠道超时 ≥ 180s，客户端超时 ≥ 200s |
 | 单账号并发 | 并发 3 时上游出现 `Connection reset` | `PHOTIFY_MAX_CONCURRENCY=1~2`／账号 |
-| 扩容方式 | 加账号，而不是加并发 | 每账号一张身份图，轮询分摊 |
+| 扩容方式 | 加账号，而不是加并发 | 每个 persona 绑一个账号；同一账号串行 |
 | 图片体积 | ≈ 60–85 KB / 768×1152 JPEG | 网关按魔数落盘，无需转码 |
 
 ---
@@ -145,5 +159,6 @@ curl -X POST http://127.0.0.1:8931/v1/images/edits \
 - [ ] `/admin/accounts` 三个余额符合预期
 - [ ] `PHOTIFY_MAX_CONCURRENCY` 与账号数匹配（≤ 账号数 × 2）
 - [ ] new-api 里手工配了模型价格，未走默认 ratio
-- [ ] 只把 `photify/starter` 暴露给用户（其余需 premium 额度）
+- [ ] 只把 `photify/starter` 和 `photify/<persona>` 暴露给用户（其余需 premium 额度）
+- [ ] 每个 persona 账号都已绑好身份图（首次请求会自动上传 `PHOTIFY_IDENTITY_IMAGE`）
 - [ ] 网关放在内网 / 加 IP 白名单（本身无鉴权）
